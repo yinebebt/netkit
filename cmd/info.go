@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cobra"
 	"net"
 	"net/http"
+	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // NetkitIP relevant info about the IP address.
@@ -19,6 +22,8 @@ type NetkitIP struct {
 
 // IPGeoInfo geolocation information.
 type IPGeoInfo struct {
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
 	IP         string `json:"ip"`
 	Continent  string `json:"continent"`
 	Country    string `json:"country"`
@@ -30,26 +35,44 @@ type IPGeoInfo struct {
 }
 
 func fetchGeolocation(ip string) (*IPGeoInfo, error) {
-	resp, err := http.Get(fmt.Sprintf("https://ipwho.is/%s", ip))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://ipwho.is/%s", ip), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ipwho.is returned status %d", resp.StatusCode)
+	}
 
 	var geo IPGeoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&geo); err != nil {
 		return nil, err
 	}
 
-	if geo.IP == "" {
-		return nil, fmt.Errorf("no data for IP %s", ip)
+	if !geo.Success {
+		if geo.Message == "" {
+			geo.Message = "unknown error"
+		}
+		return nil, fmt.Errorf("geolocation lookup failed: %s", geo.Message)
 	}
 
 	return &geo, nil
 }
 
-func iPv4Class(ip net.IP) string {
-	firstOctet := ip[12] // since net.IP size is extended to 16byte.
+func ipv4Class(ip net.IP) string {
+	// net.IP uses a 16-byte representation. For IPv4-mapped IPv6 addresses
+	// (RFC 4291), the actual IPv4 address occupies the final 4 bytes.
+	// Index 12 corresponds to the first octet of the IPv4 address.
+	firstOctet := ip[12]
 	switch {
 	case firstOctet < 128:
 		return "Class A"
@@ -68,12 +91,20 @@ var infoCmd = &cobra.Command{
 	Use:   "info <ip>",
 	Short: "Show information about an IP address",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		asJSON, err := cmd.Flags().GetBool("json")
+		if err != nil {
+			return err
+		}
+		noGeo, err := cmd.Flags().GetBool("no-geo")
+		if err != nil {
+			return err
+		}
+
 		ipStr := args[0]
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			fmt.Println("Invalid IP address.")
-			return
+			return fmt.Errorf("invalid IP address: %s", ipStr)
 		}
 
 		nk := NetkitIP{
@@ -82,43 +113,69 @@ var infoCmd = &cobra.Command{
 
 		if ip.To4() != nil {
 			nk.Version = "IPv4"
-			nk.Class = iPv4Class(ip)
+			nk.Class = ipv4Class(ip)
 		} else {
 			nk.Version = "IPv6"
 		}
 
-		if ip.IsPrivate() {
+		switch {
+		case ip.IsLoopback():
+			nk.Scope = "Loopback"
+		case ip.IsPrivate():
 			nk.Scope = "Private"
-		} else {
+		case ip.IsMulticast():
+			nk.Scope = "Multicast"
+		case ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast():
+			nk.Scope = "Link-Local"
+		case ip.IsUnspecified():
+			nk.Scope = "Unspecified"
+		default:
 			nk.Scope = "Public"
-			geo, err := fetchGeolocation(ipStr)
-			if err == nil {
-				nk.Geo = geo
+			if !noGeo {
+				geo, geoErr := fetchGeolocation(ipStr)
+				if geoErr == nil {
+					nk.Geo = geo
+				} else {
+					cmd.PrintErrf("Warning: could not fetch geolocation info: %v\n", geoErr)
+				}
 			}
 		}
 
-		printIPInfo(nk)
+		if asJSON {
+			return printIPInfoJSON(cmd, nk)
+		}
+
+		printIPInfo(cmd, nk)
+		return nil
 	},
 }
 
 func init() {
+	infoCmd.Flags().Bool("json", false, "Output as JSON")
+	infoCmd.Flags().Bool("no-geo", false, "Skip geolocation lookup for public IPs")
 	rootCmd.AddCommand(infoCmd)
 }
 
-func printIPInfo(nk NetkitIP) {
-	fmt.Println("IP Address:", nk.IP)
-	fmt.Println("  Version:", nk.Version)
+func printIPInfo(cmd *cobra.Command, nk NetkitIP) {
+	cmd.Println("IP Address:", nk.IP)
+	cmd.Println("  Version:", nk.Version)
 	if nk.Version == "IPv4" {
-		fmt.Println("  Class:", nk.Class)
+		cmd.Println("  Class:", nk.Class)
 	}
-	fmt.Println("  Scope:", nk.Scope)
+	cmd.Println("  Scope:", nk.Scope)
 
 	if nk.Scope == "Public" && nk.Geo != nil {
-		fmt.Println("  Geo Info:")
-		fmt.Printf("    Continent: %s\n", nk.Geo.Continent)
-		fmt.Printf("    Country:   %s\n", nk.Geo.Country)
-		fmt.Printf("    Region:    %s\n", nk.Geo.Region)
-		fmt.Printf("    ISP:       %s\n", nk.Geo.Connection.ISP)
-		fmt.Printf("    Org:       %s\n", nk.Geo.Connection.Org)
+		cmd.Println("  Geo Info:")
+		cmd.Printf("    Continent: %s\n", nk.Geo.Continent)
+		cmd.Printf("    Country:   %s\n", nk.Geo.Country)
+		cmd.Printf("    Region:    %s\n", nk.Geo.Region)
+		cmd.Printf("    ISP:       %s\n", nk.Geo.Connection.ISP)
+		cmd.Printf("    Org:       %s\n", nk.Geo.Connection.Org)
 	}
+}
+
+func printIPInfoJSON(cmd *cobra.Command, nk NetkitIP) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(nk)
 }
