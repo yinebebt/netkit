@@ -2,25 +2,32 @@
 
 Toolkit for IP address manipulation, CIDR calculations, and general networking utilities.
 
-## Features:
+## Features
 
-- [x] IP Address Information.
-- [ ] Reverse DNS and hostname lookups.
-- [ ] Utilities for ports, protocols, and common network operations.
+- [x] IP address information lookup (`info`)
+- [x] Forward DNS lookup (`resolve`) for domain -> IP
+- [x] Reverse DNS lookup (`reverse`) for IP -> hostname (PTR)
+- [x] Optional JSON output for machine-friendly automation
+- [ ] CIDR calculators
+- [ ] Utilities for ports, protocols, and common network operations
 
-## Installation:
+## Installation
 
 ```shell
-  go install github.com/yinebet/netkit@latest
- ```
+go install github.com/yinebebt/netkit@latest
+```
 
-```shell
+## Usage
+
+```bash
 Usage:
   netkit [command]
 
 Available Commands:
   help        Help about any command
   info        Show information about an IP address
+  resolve     Resolve domain name to IP addresses (A/AAAA)
+  reverse     Resolve IP address to hostnames (PTR / reverse DNS)
 
 Flags:
   -h, --help   help for netkit
