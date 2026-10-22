@@ -1,5 +1,8 @@
 # netkit
 
+[![CI](https://github.com/yinebebt/netkit/actions/workflows/ci.yml/badge.svg)](https://github.com/yinebebt/netkit/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/yinebebt/netkit.svg)](https://pkg.go.dev/github.com/yinebebt/netkit)
+
 Toolkit for IP address manipulation, CIDR calculations, and general networking utilities.
 
 ## Features
